@@ -1,0 +1,292 @@
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.Mvc;
+using Adf.App.Interface.Entity;
+using Adf.App.Service.Controller;
+using Adf.App.Service.Service;
+using Adf.App.Service.Service.JqueryDataTables;
+using Adf.Core.Database;
+using Adf.Core.Database.Entity;
+using Adf.Core.Entity;
+using Adf.Core.Util;
+using Adf.Core.Web;
+using Adf.Web.Controllers.Base;
+
+namespace Adf.Web.Areas.Manage.Controllers
+{
+    /// <summary>
+    /// 通用模块处理
+    /// 负责通模块处理
+    /// 
+    /// </summary>
+    public class BaseModuleController : UserBaseController
+    {
+        //
+        // GET: /Manage/BaseModule/
+
+        public ActionResult Index(String showType = "list", String doCmd = "")
+        {
+            
+            //
+            String viewName = GlobalModule.ViewName;
+            Dictionary<String,DataTable> dicInfo = new Dictionary<string, DataTable>();
+
+            //得到当前模块所对应的数据集
+            List<ModuleDataset> lstModuleDatasets = AppService.Instance().ModuleDataset().GetAll(GlobalModuleCode);
+
+            foreach (ModuleDataset moduleDatasetEntity in lstModuleDatasets)
+            {
+                //当是列表的时候，详细页的数据集进行取值 当是分页数据源的时候则无需获取数据 
+                if ((moduleDatasetEntity.IsDetail == 1 && showType == "list") || moduleDatasetEntity.IsPage == 1)
+                {
+                    continue;
+                }
+
+
+                SysDataset sysDatasetEntity = moduleDatasetEntity.SysDataset;
+
+
+
+                String dsSourceType = sysDatasetEntity.DsSourceType;
+
+                //在是类型是表或者视图的时候进行采用
+                if (dsSourceType.ToLower().Equals("table") || dsSourceType.ToLower().Equals("view"))
+                {                    
+                    //构建常见变量
+                    Dictionary<String, String> curDicInfo = new Dictionary<string, string>();
+                    curDicInfo.Add("LoginUserCode", GlobalLoginUser.UserCode);
+                    curDicInfo.Add("LoginOrgCode", GlobalLoginUser.UserCode);
+                    curDicInfo.Add("LoginRoleCode", GlobalUserDefaultRole.RoleCode);
+
+                    //得到所需常见变量
+                    String curTableName = moduleDatasetEntity.SysDataset.DsSourceName;
+                    String fmtWhere = moduleDatasetEntity.WhereInfo;
+                    String curWhere = UtilHelper.ParsingWhere(fmtWhere, curDicInfo);
+                    String curOrderBy = moduleDatasetEntity.OrderInfo;
+                    String curFieldNames = moduleDatasetEntity.FieldNames;
+                    int curTopNum = moduleDatasetEntity.TopNum;
+
+                    DataTable dtInfo = DbService.Instance()
+                        .QueryDataTable(curTableName, curFieldNames, curWhere, curOrderBy, curTopNum);
+
+                    //加入至集合中
+                    String dtKey = "";
+                    if (String.IsNullOrEmpty(moduleDatasetEntity.DtAliasCode))
+                    {
+                        dtKey = moduleDatasetEntity.DsCode;
+                    }
+                    else
+                    {
+                        dtKey = moduleDatasetEntity.DtAliasCode;
+                    }
+                    dtKey = dtKey.ToLower();
+                    if (!dicInfo.ContainsKey(dtKey))
+                    {
+                        dicInfo.Add(dtKey,dtInfo);
+                    }         
+           
+
+                }
+            }
+
+            
+            //ViewBag传至ViewBag中
+            ViewBag.DoCmd = doCmd;
+            ViewBag.ShowType = showType;
+            ViewBag.DicDataset = dicInfo;
+
+            return View(viewName);
+        }
+
+        /// <summary>
+        /// 取分页的数据,以符合Jquery.DataTables的需要
+        /// </summary>
+        /// <returns></returns>
+        public ActionResult ListData()
+        {
+            String curDsCode = RequestHelper.GetQueryString("ds");
+            String curModuleCode = GlobalModuleCode;
+            int curIsAlias = RequestHelper.GetQueryString("isalias", 0);
+            ModuleDataset moduleDatasetEntity = null;
+            if (curIsAlias == 1)
+            {
+                moduleDatasetEntity = AppService.Instance()
+                    .ModuleDataset()
+                    .GetEntityByAliasCode(curModuleCode, curDsCode, false);
+            }
+            else
+            {
+                moduleDatasetEntity = AppService.Instance()
+                .ModuleDataset()
+                .GetEntity(curModuleCode, curDsCode);
+            }
+
+            //得到前端转递过来的参数
+            DataTablesRequest dataTablesRequest = new DataTablesRequest(Request);
+            long pageIndex = dataTablesRequest.DisplayStart;
+            int pageSize = dataTablesRequest.DisplayLength;
+
+            if (pageSize > 0)
+            {
+                pageIndex = MathHelper.DivisionForMinInt(pageIndex, pageSize);
+            }
+            pageIndex = pageIndex + 1;
+
+            long recordCount = 0;
+            long pageCount = 0;
+            String lstInfo = "[]";
+            //构建常见变量
+            Dictionary<String,String> curDicInfo = new Dictionary<string, string>();
+            curDicInfo.Add("LoginUserCode",GlobalLoginUser.UserCode);
+            curDicInfo.Add("LoginOrgCode",GlobalLoginUser.UserCode);
+            curDicInfo.Add("LoginRoleCode",GlobalUserDefaultRole.RoleCode);
+            
+            //得到所需常见变量
+            SysDataset curSysDataset = moduleDatasetEntity.SysDataset;
+            if (curSysDataset != null)
+            {
+                if(curSysDataset.DsSourceType == "table" || curSysDataset.DsSourceType == "view")
+                {
+                    String curTableName = moduleDatasetEntity.SysDataset.DsSourceName;
+                    String fmtWhere = moduleDatasetEntity.WhereInfo;
+                    String curWhere = UtilHelper.ParsingWhere(fmtWhere, curDicInfo);
+                    String curOrderBy = moduleDatasetEntity.OrderInfo;
+
+
+                    
+
+                    //得到记录集
+                    DataTable dtInfo = AppService.QueryDataTable(curTableName, curWhere, curOrderBy, pageIndex, pageSize,
+                        ref pageCount, ref recordCount);
+
+                    lstInfo = JsonHelper.DataTableToJson(dtInfo);
+                }
+                else if(curSysDataset.DsSourceType == "function")
+                {
+                    //String sysFuncId = RequestHelper.GetQueryString("sysfuncId");
+
+
+                    String sysFuncId = curSysDataset.DsSourceName;
+
+                    List<OpFunctionParam> lstParamValue = AppService.Instance().OpFunctionParam().GetAll(sysFuncId);
+                    AppService.Instance().OpFunctionParam().SetOpFunctionParamValue(lstParamValue);
+
+                    foreach (OpFunctionParam functionParam in lstParamValue)
+                    {
+                        //设置默认的值
+                        String tmpParamCode = functionParam.ParamCode.ToLower();
+                        if (tmpParamCode.Equals("pageindex"))
+                        {
+                            functionParam.ParamValue = pageIndex.ToString();
+                        }
+                        if (tmpParamCode.Equals("pagesize"))
+                        {
+                            functionParam.ParamValue = pageSize.ToString();
+                        }
+                    }
+
+
+                    OpFunction opFunction = AppService.Instance().OpFunction().GetEntity(sysFuncId);
+
+                    DataTable dtInfo = AppService.Instance().OpFunction().QueryDataTable(opFunction,lstParamValue);
+                    lstInfo = ConvertHelper.DataTableToJson(dtInfo);
+                    OpFunctionParam opFunctionParam = lstParamValue.Find(delegate(OpFunctionParam entity)
+                    {
+                        return entity.ParamCode.ToLower().Equals("recordcount");
+                    });
+
+                    //得到记录总数
+                    if (opFunctionParam != null && !String.IsNullOrEmpty(opFunctionParam.ParamValue))
+                    {
+                        recordCount = ConvertHelper.ObjectToT<long>(opFunctionParam.ParamValue,0);
+                    }
+
+                }
+
+            }
+            //返回前端Json数据
+            Dictionary<String, Object> dicInfo = new Dictionary<string, object>();
+            
+            dicInfo.Add("aaData", lstInfo);
+            dicInfo.Add("sEcho", dataTablesRequest.SEcho);
+            dicInfo.Add("iTotalRecords", recordCount);
+            dicInfo.Add("iTotalDisplayRecords", recordCount);
+
+            String retContent = "{";
+            retContent += "\"aaData\":" + lstInfo;
+            retContent += ",\"sEcho\":" + dataTablesRequest.SEcho;
+            retContent += ",\"iTotalRecords\":" + recordCount;
+            retContent += ",\"iTotalDisplayRecords\":" + recordCount;
+            retContent += "}";
+
+            return Content(retContent, "text/plain", Encoding.UTF8);
+
+
+
+
+
+        }
+
+        /// <summary>
+        /// 保存结果
+        /// </summary>
+        /// <param name="doCmd"></param>
+        /// <param name="sysFuncId">功能Id</param>
+        /// <returns></returns>
+
+        public JsonResult ExecuteGet(String doCmd, String sysFuncId)
+        {
+            ExeMsgInfo exeMsgInfo = new ExeMsgInfo();
+
+            OpFunction opFunction = AppService.Instance().OpFunction().GetEntity(sysFuncId);
+            if (opFunction != null)
+            {
+                exeMsgInfo = AppService.ExecuteFunc(opFunction);
+            }
+
+            return Json(exeMsgInfo, JsonRequestBehavior.AllowGet);
+        }
+
+        /// <summary>
+        /// 以Post方式进行提交
+        /// </summary>
+        /// <param name="doCmd"></param>
+        /// <param name="sysFuncId"></param>
+        /// <returns></returns>
+        [HttpPost]
+        [ValidateInput(false)]
+        public JsonResult ExecutePost(String doCmd, String sysFuncId)
+        {
+            ExeMsgInfo exeMsgInfo = new ExeMsgInfo();
+
+            OpFunction opFunction = AppService.Instance().OpFunction().GetEntity(sysFuncId);
+            if (opFunction != null)
+            {
+                exeMsgInfo = AppService.ExecuteFunc(opFunction);
+            }
+
+            return Json(exeMsgInfo, JsonRequestBehavior.AllowGet);
+        }
+
+
+        /// <summary>
+        /// 选择
+        /// </summary>
+        /// <returns></returns>
+        public ViewResult SelectKvData(String viewName, String mc)
+        {
+            //String viewName = "";
+
+            return View(viewName);
+        }
+
+
+
+
+
+    }
+}
